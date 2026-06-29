@@ -1,0 +1,16 @@
+{
+  "name": "yahoo-auction-tracker",
+  "version": "1.2.0",
+  "description": "Railway cron app that refreshes Yahoo Auctions watchlist fields in Airtable.",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "cheerio": "^1.0.0"
+  }
+}
