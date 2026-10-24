@@ -2,8 +2,8 @@
 // Script Properties: AIRTABLE_TOKEN (read/write records, Auction Workflow base only).
 const BASE='appxuwca7ioU2Tnrd', TABLE='tblMutxAENhGTZows';
 const TABS=['Queue','Active','Presumed Won','Won','Ended - Lost'];
-const MANUAL=['Queue','Bid Placed','Presumed Won','Won','Lost'];
-const HEADERS=['Auction ID','Auction','Auction Link','Max Bid JPY','Current Bid JPY','Final Price JPY','Ends (Japan time)','Auction Status','Bid Result','Confirmed Won','Bid Instructions','Status','Notes','Last Checked (UTC)','Airtable Record ID'];
+const MANUAL=['Auto','Queue','Bid Placed','Presumed Won','Won','Lost'];
+const HEADERS=['Auction ID','Auction','Auction Link','Max Bid JPY','Current Bid JPY','Final Price JPY','Ends (Japan time)','Auto Status','Bid Result','Confirmed Won','Bid Instructions','Manual Status','Notes','Last Checked (UTC)','Airtable Record ID'];
 const EDITS={3:'My Max Bid JPY',11:'Matt Status',12:'Matt Notes'};
 function onOpen(){SpreadsheetApp.getUi().createMenu('Auction Sync').addItem('Install / authorize','install').addItem('Sync now','syncAuctions').addToUi();}
 function install(){
@@ -46,17 +46,16 @@ function api(method,path,body){
 function readAll(){let out=[],offset='';do{const r=api('get','?pageSize=100'+(offset?'&offset='+encodeURIComponent(offset):''));out=out.concat(r.records);offset=r.offset||'';}while(offset);return out;}
 function cleanStatus(value){const s=String(value||'').trim();if(s==='Active')return 'Bid Placed';if(['Cancelled','Skipped','Ended - Lost','Lost - Ended','Ended/Lost'].includes(s)||/^Lost(?:$| —)/.test(s))return 'Lost';return MANUAL.includes(s)?s:'';}
 function manualStatus(value){const s=cleanStatus(value);return s==='Bid Placed'?'Active':s==='Lost'?'Ended - Lost':s;}
-function nextStatus(f){
- let s=cleanStatus(f['Matt Status']);
- if(['Won','Lost','Presumed Won'].includes(s))return s;
- if(!s&&f['Confirmed Won'])return 'Won';
- if(f['Auction Status']==='Cancelled')return 'Lost';
+function autoStatus(f){
+ if(f['Auction Status']==='Cancelled')return 'Ended/Lost';
+ if(f['Auction Status']==='Error')return 'Needs Check';
  if(f['Auction Status']==='Ended'){
  const p=f['Final Price JPY'],m=f['My Max Bid JPY'];
- return (s==='Bid Placed'||!s)&&typeof p==='number'&&p>0&&typeof m==='number'&&m>0&&p<=m?'Presumed Won':'Lost';
- }return s||'Queue';
+ return typeof p==='number'&&p>0&&typeof m==='number'&&m>0&&p<=m?'Presumed Won':'Ended/Lost';}
+ return f['Auction Status']==='Active'?'Active':'Checking';
 }
-function tabFor(f){const s=nextStatus(f);return s==='Bid Placed'?'Active':s==='Lost'?'Ended - Lost':s;}
+function nextStatus(f){const s=cleanStatus(f['Matt Status']);if(s&&s!=='Auto')return s;if(f['Confirmed Won'])return 'Won';return 'Auto';}
+function tabFor(f){const s=nextStatus(f);if(s==='Bid Placed')return 'Active';if(s==='Lost')return 'Ended - Lost';if(s!=='Auto')return s;const a=autoStatus(f);return a==='Ended/Lost'?'Ended - Lost':a==='Presumed Won'?'Presumed Won':a==='Active'?'Active':'Queue';}
 function applyWorkflow(records){
  const updates=[];
  for(const r of records){if(!r.fields['Auction Link'])continue;const s=nextStatus(r.fields),won=s==='Won';
@@ -70,7 +69,7 @@ function editable(f){const out={};for(const [c,k]of Object.entries(EDITS))out[k]
 function merge(base,remote,row){const patch={};
  for(const[c,k]of Object.entries(EDITS)){const local=normalized(Number(c),row[Number(c)]);if(JSON.stringify(local)===JSON.stringify(base[k]))continue;
  if(JSON.stringify(remote[k])!==JSON.stringify(base[k])&&JSON.stringify(remote[k])!==JSON.stringify(local))throw Error('Conflict in '+k+': edited in both Airtable and Sheets. Resolve before retrying.');
- if(k==='Matt Status'&&!MANUAL.includes(local))throw Error('Choose Queue, Bid Placed, Presumed Won, Won, or Lost.');
+ if(k==='Matt Status'&&!MANUAL.includes(local))throw Error('Choose Auto, Queue, Bid Placed, Presumed Won, Won, or Lost.');
  patch[k]=local;}
  if(Object.prototype.hasOwnProperty.call(patch,'Matt Status'))patch['Confirmed Won']=patch['Matt Status']==='Won';
  return patch;
@@ -82,7 +81,7 @@ function simplifyStatus(){upgradeTabs();}
 function upgradeTabs(){
  const ss=sheet(),source=ss.getSheetByName('Active'),legacy=ss.getSheetByName('Lost - Ended');
  if(legacy&&!ss.getSheetByName('Ended - Lost'))legacy.setName('Ended - Lost');
- for(const name of TABS){let sh=ss.getSheetByName(name);if(!sh){sh=ss.insertSheet(name);source.getRange('A1:O1').copyTo(sh.getRange('A1:O1'));}sh.getRange(1,1,1,15).setValues([HEADERS]);sh.setFrozenRows(1);sh.hideColumns(1);sh.hideColumns(8,4);sh.hideColumns(14,2);sh.setColumnWidth(12,155);sh.setColumnWidth(13,330);
+ for(const name of TABS){let sh=ss.getSheetByName(name);if(!sh){sh=ss.insertSheet(name);source.getRange('A1:O1').copyTo(sh.getRange('A1:O1'));}sh.getRange(1,1,1,15).setValues([HEADERS]);sh.setFrozenRows(1);sh.hideColumns(1);sh.showColumns(8);sh.hideColumns(9,3);sh.hideColumns(14,2);sh.setColumnWidth(12,155);sh.setColumnWidth(13,330);
  sh.getRange('L2:L1000').setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(MANUAL,true).setAllowInvalid(false).build());
  ss.setActiveSheet(sh);ss.moveActiveSheet(TABS.indexOf(name)+1);}
  ss.setActiveSheet(ss.getSheetByName('Setup'));ss.moveActiveSheet(TABS.length+1);syncAuctions();
@@ -104,7 +103,7 @@ function syncAuctions(){const lock=LockService.getScriptLock();if(!lock.tryLock(
  if(signature(rowsNow())!==sig){status('New edits detected before refresh; rows retained for the next run.');return;}
  render(fresh);saveBaselines(fresh);status('Last successful sync: '+new Date().toISOString()+'. Yahoo importer refreshes independently.');
  }catch(e){status('SYNC NEEDS REVIEW: '+e.message);throw e;}finally{lock.releaseLock();}}
-function render(records){const grouped=Object.fromEntries(TABS.map(t=>[t,[]]));for(const r of records){const f=r.fields;if(!f["Auction Link"])continue;grouped[tabFor(f)].push([f['Auction ID']||'',f['Auction Title EN']||f['Auction Title']||f['Name']||'',f['Auction Link']||'',f['My Max Bid JPY']??'',f['Current Bid JPY']??'',f['Final Price JPY']??'',f['End Time']?Utilities.formatDate(new Date(f['End Time']),'Asia/Tokyo','yyyy-MM-dd HH:mm'):'',f['Auction Status']||'',f['Bid Result']||'',!!f['Confirmed Won'],f['Bid Instructions']||'',f['Matt Status']||'',f['Matt Notes']||'',f['Last Checked']||'',r.id]);}
+function render(records){const grouped=Object.fromEntries(TABS.map(t=>[t,[]]));for(const r of records){const f=r.fields;if(!f["Auction Link"])continue;grouped[tabFor(f)].push([f['Auction ID']||'',f['Auction Title EN']||f['Auction Title']||f['Name']||'',f['Auction Link']||'',f['My Max Bid JPY']??'',f['Current Bid JPY']??'',f['Final Price JPY']??'',f['End Time']?Utilities.formatDate(new Date(f['End Time']),'Asia/Tokyo','yyyy-MM-dd HH:mm'):'',autoStatus(f),f['Bid Result']||'',!!f['Confirmed Won'],f['Bid Instructions']||'',f['Matt Status']||'',f['Matt Notes']||'',f['Last Checked']||'',r.id]);}
  for(const tab of TABS){const sh=sheet().getSheetByName(tab),rows=grouped[tab];rows.sort((a,b)=>String(a[6]||'9999').localeCompare(String(b[6]||'9999')));const old=sh.getLastRow();if(sh.getMaxRows()<rows.length+1)sh.insertRowsAfter(sh.getMaxRows(),rows.length+1-sh.getMaxRows());if(rows.length)sh.getRange(2,1,rows.length,15).setValues(rows.map(row=>row.map(v=>typeof v==="string"&&v.startsWith("=")?"\u0027"+v:v)));if(old>rows.length+1)sh.getRange(rows.length+2,1,old-rows.length-1,15).clearContent();}
 }
 function saveBaselines(records){const p=PropertiesService.getScriptProperties();for(const r of records)p.setProperty('BASE_'+r.id,JSON.stringify(editable(r.fields)));}
