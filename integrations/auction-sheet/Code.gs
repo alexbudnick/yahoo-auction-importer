@@ -54,7 +54,7 @@ function autoStatus(f){
  return typeof p==='number'&&p>0&&typeof m==='number'&&m>0&&p<=m?'Presumed Won':'Ended/Lost';}
  return f['Auction Status']==='Active'?'Active':'Checking';
 }
-function nextStatus(f){const s=cleanStatus(f['Matt Status']);if(s&&s!=='Auto')return s;if(f['Confirmed Won'])return 'Won';return 'Auto';}
+function nextStatus(f){const s=cleanStatus(f['Matt Status']);if(s&&s!=='Auto')return s;if(f['Confirmed Won'])return 'Won';return f['Auction Status']==='Ended'||f['Auction Status']==='Cancelled'?'Auto':'Queue';}
 function tabFor(f){const s=nextStatus(f);if(s==='Bid Placed')return 'Active';if(s==='Lost')return 'Ended - Lost';if(s!=='Auto')return s;const a=autoStatus(f);return a==='Ended/Lost'?'Ended - Lost':a==='Presumed Won'?'Presumed Won':a==='Active'?'Active':'Queue';}
 function applyWorkflow(records){
  const updates=[];
