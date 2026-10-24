@@ -2,9 +2,9 @@
 // Script Properties: AIRTABLE_TOKEN (read/write records, Auction Workflow base only).
 const BASE='appxuwca7ioU2Tnrd', TABLE='tblMutxAENhGTZows';
 const TABS=['Queue','Active','Presumed Won','Won','Ended - Lost'];
-const MANUAL=['Auto','Queue','Bid Placed','Presumed Won','Won','Lost','Cancelled','Skipped'];
-const HEADERS=['Auction ID','Auction','Auction Link','Max Bid JPY','Current Bid JPY','Final Price JPY','Ends (Japan time)','Auction Status','Bid Result','Confirmed Won','Bid Instructions','Matt Status','Matt Notes','Last Checked (UTC)','Airtable Record ID'];
-const EDITS={3:'My Max Bid JPY',9:'Confirmed Won',10:'Bid Instructions',11:'Matt Status',12:'Matt Notes'};
+const MANUAL=['Queue','Bid Placed','Presumed Won','Won','Lost'];
+const HEADERS=['Auction ID','Auction','Auction Link','Max Bid JPY','Current Bid JPY','Final Price JPY','Ends (Japan time)','Auction Status','Bid Result','Confirmed Won','Bid Instructions','Status','Notes','Last Checked (UTC)','Airtable Record ID'];
+const EDITS={3:'My Max Bid JPY',11:'Matt Status',12:'Matt Notes'};
 function onOpen(){SpreadsheetApp.getUi().createMenu('Auction Sync').addItem('Install / authorize','install').addItem('Sync now','syncAuctions').addToUi();}
 function install(){
  const p=PropertiesService.getScriptProperties();
@@ -18,7 +18,20 @@ function install(){
  ScriptApp.newTrigger('auctionEdited').forSpreadsheet(p.getProperty('SPREADSHEET_ID')).onEdit().create();
  status('Active — edits trigger sync; scheduled refresh approximately every minute. Yahoo facts follow the importer schedule.');
 }
-function auctionEdited(e){if(e&&TABS.includes(e.range.getSheet().getName()))syncAuctions();}
+function auctionEdited(e){
+ if(!e||!TABS.includes(e.range.getSheet().getName()))return;
+ if(e.range.getRow()>1&&e.range.getColumn()===12&&e.range.getNumRows()===1&&e.range.getNumColumns()===1&&MANUAL.includes(String(e.value||''))){
+ const lock=LockService.getScriptLock();lock.waitLock(30000);
+ try{const sh=e.range.getSheet(),row=e.range.getRow(),id=sh.getRange(row,15).getValue();
+ if(id&&String(sh.getRange(row,12).getValue())===String(e.value)){
+ const r=api('get','/'+id);const baseRaw=PropertiesService.getScriptProperties().getProperty('BASE_'+id);
+ const old=baseRaw?JSON.parse(baseRaw)['Matt Status']:r.fields['Matt Status']||'';
+ if(String(r.fields['Matt Status']||'')!==String(old)&&String(r.fields['Matt Status']||'')!==String(e.value))throw Error('Status changed in Airtable at the same time; review before retrying.');
+ const updated=api('patch','/'+id,{fields:{'Matt Status':e.value,'Confirmed Won':e.value==='Won'}});
+ PropertiesService.getScriptProperties().setProperty('BASE_'+id,JSON.stringify(editable(updated.fields)));
+ }}finally{lock.releaseLock();}}
+ syncAuctions();
+}
 function sheet(){const id=PropertiesService.getScriptProperties().getProperty('SPREADSHEET_ID');if(!id)throw Error('Run install first.');return SpreadsheetApp.openById(id);}
 function status(s){sheet().getSheetByName('Setup').getRange('A2').setValue(s);}
 function api(method,path,body){
@@ -31,28 +44,46 @@ function api(method,path,body){
  }throw Error('Airtable temporarily unavailable; sync will retry.');
 }
 function readAll(){let out=[],offset='';do{const r=api('get','?pageSize=100'+(offset?'&offset='+encodeURIComponent(offset):''));out=out.concat(r.records);offset=r.offset||'';}while(offset);return out;}
-function manualStatus(value){const s=String(value||'').trim();if(s==='Bid Placed'||s==='Active')return 'Active';if(['Lost','Cancelled','Skipped','Ended - Lost','Lost - Ended','Ended/Lost'].includes(s)||/^Lost(?:$| —)/.test(s))return 'Ended - Lost';return ['Queue','Presumed Won','Won'].includes(s)?s:'';}
-function tabFor(f){
- const manual=manualStatus(f['Matt Status']);if(manual)return manual;
- if(f['Confirmed Won']||f['Bid Result']==='Won')return 'Won';
- if(f['Bid Result']==='Lost'||f['Auction Status']==='Cancelled')return 'Ended - Lost';
- if(f['Auction Status']==='Ended'){const price=f['Final Price JPY'],max=f['My Max Bid JPY'];return typeof price==='number'&&price>0&&typeof max==='number'&&max>0&&price<=max?'Presumed Won':'Ended - Lost';}
- return 'Queue';
+function cleanStatus(value){const s=String(value||'').trim();if(s==='Active')return 'Bid Placed';if(['Cancelled','Skipped','Ended - Lost','Lost - Ended','Ended/Lost'].includes(s)||/^Lost(?:$| —)/.test(s))return 'Lost';return MANUAL.includes(s)?s:'';}
+function manualStatus(value){const s=cleanStatus(value);return s==='Bid Placed'?'Active':s==='Lost'?'Ended - Lost':s;}
+function nextStatus(f){
+ let s=cleanStatus(f['Matt Status']);
+ if(['Won','Lost','Presumed Won'].includes(s))return s;
+ if(!s&&f['Confirmed Won'])return 'Won';
+ if(f['Auction Status']==='Cancelled')return 'Lost';
+ if(f['Auction Status']==='Ended'){
+ const p=f['Final Price JPY'],m=f['My Max Bid JPY'];
+ return (s==='Bid Placed'||!s)&&typeof p==='number'&&p>0&&typeof m==='number'&&m>0&&p<=m?'Presumed Won':'Lost';
+ }return s||'Queue';
+}
+function tabFor(f){const s=nextStatus(f);return s==='Bid Placed'?'Active':s==='Lost'?'Ended - Lost':s;}
+function applyWorkflow(records){
+ const updates=[];
+ for(const r of records){if(!r.fields['Auction Link'])continue;const s=nextStatus(r.fields),won=s==='Won';
+ if(r.fields['Matt Status']!==s||!!r.fields['Confirmed Won']!==won){updates.push({id:r.id,fields:{'Matt Status':s,'Confirmed Won':won}});}}
+ for(let i=0;i<updates.length;i+=10){const batch=updates.slice(i,i+10);api('patch','',{records:batch});for(const u of batch){const r=records.find(r=>r.id===u.id);Object.assign(r.fields,u.fields);}}
+ return records;
 }
 function auctionId(url){const m=String(url||'').match(/^https:\/\/(?:auctions\.yahoo\.co\.jp|auctions\.yahoo\.co\.jp)\/jp\/auction\/([A-Za-z0-9]+)(?:[?#/].*)?$/);if(!m)throw Error('Use a Yahoo auction URL of the form https://auctions.yahoo.co.jp/jp/auction/ID');return m[1];}
 function normalized(col,value){if(col===9)return value===true||String(value).toUpperCase()==='TRUE';if(col===3){if(value===''||value===null)return null;const n=Number(value);if(!Number.isFinite(n)||n<0||!Number.isInteger(n))throw Error('Maximum bid must be a nonnegative whole yen amount.');return n;}const s=String(value??'');if(s.length>1500)throw Error('Keep instructions/status/notes under 1,500 characters.');return s;}
 function editable(f){const out={};for(const [c,k]of Object.entries(EDITS))out[k]=normalized(Number(c),f[k]??'');return out;}
-function merge(base,remote,row){const patch={};for(const [c,k]of Object.entries(EDITS)){const local=normalized(Number(c),row[Number(c)]);if(JSON.stringify(local)===JSON.stringify(base[k]))continue;if(JSON.stringify(remote[k])!==JSON.stringify(base[k])&&JSON.stringify(remote[k])!==JSON.stringify(local))throw Error('Conflict in '+k+': edited in both Airtable and Sheets. Resolve the values before retrying.');patch[k]=local;}if(Object.prototype.hasOwnProperty.call(patch,'Matt Status')&&MANUAL.includes(String(patch['Matt Status'])))patch['Confirmed Won']=manualStatus(patch['Matt Status'])==='Won';
- else if(Object.prototype.hasOwnProperty.call(patch,'Confirmed Won')){patch['Matt Status']=patch['Confirmed Won']?'Won':manualStatus(remote['Matt Status'])==='Won'?'Auto':remote['Matt Status'];}
- return patch;}
+function merge(base,remote,row){const patch={};
+ for(const[c,k]of Object.entries(EDITS)){const local=normalized(Number(c),row[Number(c)]);if(JSON.stringify(local)===JSON.stringify(base[k]))continue;
+ if(JSON.stringify(remote[k])!==JSON.stringify(base[k])&&JSON.stringify(remote[k])!==JSON.stringify(local))throw Error('Conflict in '+k+': edited in both Airtable and Sheets. Resolve before retrying.');
+ if(k==='Matt Status'&&!MANUAL.includes(local))throw Error('Choose Queue, Bid Placed, Presumed Won, Won, or Lost.');
+ patch[k]=local;}
+ if(Object.prototype.hasOwnProperty.call(patch,'Matt Status'))patch['Confirmed Won']=patch['Matt Status']==='Won';
+ return patch;
+}
 function rowsNow(){const out=[];for(const tab of TABS){const sh=sheet().getSheetByName(tab);if(!sh)throw Error('Missing tab '+tab);const v=sh.getRange(1,1,Math.max(sh.getLastRow(),1),15).getValues();if(JSON.stringify(v[0])!==JSON.stringify(HEADERS))throw Error('Headers changed on '+tab);for(let i=1;i<v.length;i++)if(v[i].some(x=>x!==''&&x!==false))out.push({tab,row:i+1,v:v[i]});}return out;}
 function signature(rows){return JSON.stringify(rows);}
 function upgradeBidStatuses(){upgradeTabs();}
+function simplifyStatus(){upgradeTabs();}
 function upgradeTabs(){
  const ss=sheet(),source=ss.getSheetByName('Active'),legacy=ss.getSheetByName('Lost - Ended');
  if(legacy&&!ss.getSheetByName('Ended - Lost'))legacy.setName('Ended - Lost');
- for(const name of TABS){let sh=ss.getSheetByName(name);if(!sh){sh=ss.insertSheet(name);source.getRange('A1:O1').copyTo(sh.getRange('A1:O1'));}sh.getRange(1,1,1,15).setValues([HEADERS]);sh.setFrozenRows(1);
- sh.getRange('L2:L1000').setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(MANUAL,true).setAllowInvalid(true).build());
+ for(const name of TABS){let sh=ss.getSheetByName(name);if(!sh){sh=ss.insertSheet(name);source.getRange('A1:O1').copyTo(sh.getRange('A1:O1'));}sh.getRange(1,1,1,15).setValues([HEADERS]);sh.setFrozenRows(1);sh.hideColumns(1);sh.hideColumns(8,4);sh.hideColumns(14,2);sh.setColumnWidth(12,155);sh.setColumnWidth(13,330);
+ sh.getRange('L2:L1000').setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(MANUAL,true).setAllowInvalid(false).build());
  ss.setActiveSheet(sh);ss.moveActiveSheet(TABS.indexOf(name)+1);}
  ss.setActiveSheet(ss.getSheetByName('Setup'));ss.moveActiveSheet(TABS.length+1);syncAuctions();
 }
@@ -69,7 +100,7 @@ function syncAuctions(){const lock=LockService.getScriptLock();if(!lock.tryLock(
  }
  // Preserve user edits made during API calls; the next trigger will process them.
  if(signature(rowsNow())!==sig){status('Changes arrived during sync; rows retained. Next run will finish refresh.');return;}
- const fresh=readAll();
+ const fresh=applyWorkflow(readAll());
  if(signature(rowsNow())!==sig){status('New edits detected before refresh; rows retained for the next run.');return;}
  render(fresh);saveBaselines(fresh);status('Last successful sync: '+new Date().toISOString()+'. Yahoo importer refreshes independently.');
  }catch(e){status('SYNC NEEDS REVIEW: '+e.message);throw e;}finally{lock.releaseLock();}}
