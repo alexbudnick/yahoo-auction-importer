@@ -8,7 +8,7 @@ Installation is pending Google authorization. Do not treat the initial Sheet as 
 4. Save and run install once as Alex. Approve Google access to the spreadsheet, external requests, and triggers. First installation refreshes the snapshot, so preserve pending edits first.
 5. Test a max-bid edit in each direction and a Confirmed Won change before sharing with Matt.
 
-Expected behavior: installable edit trigger plus approximately one-minute polling; not guaranteed instantaneous. Yahoo facts remain on the existing 15-minute scraper schedule. Active, Won, and Lost - Ended are projections of one record per auction. Unknown results remain ended until a win is confirmed. No bids are placed by this integration. No Inventory base access is required.
+Expected behavior: installable edit trigger plus approximately one-minute polling; not guaranteed instantaneous. Yahoo facts remain on the existing 5-minute scraper schedule. Active, Won, and Lost - Ended are projections of one record per auction. Unknown results remain ended until a win is confirmed. No bids are placed by this integration. No Inventory base access is required.
 
 Editable in both places: maximum bid, confirmed-win checkbox, bid instructions, Matt status, Matt notes. Source facts remain controlled by the Yahoo importer. Add new Yahoo links on Active. Do not change existing links/IDs or manually move/delete rows.
 
