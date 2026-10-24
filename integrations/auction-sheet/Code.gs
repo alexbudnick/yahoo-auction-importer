@@ -51,7 +51,7 @@ function upgradeTabs(){
  const ss=sheet(),source=ss.getSheetByName('Active'),legacy=ss.getSheetByName('Lost - Ended');
  if(legacy&&!ss.getSheetByName('Ended - Lost'))legacy.setName('Ended - Lost');
  for(const name of TABS){let sh=ss.getSheetByName(name);if(!sh){sh=ss.insertSheet(name);source.getRange('A1:O1').copyTo(sh.getRange('A1:O1'));}sh.getRange(1,1,1,15).setValues([HEADERS]);sh.setFrozenRows(1);
- sh.getRange('L2:L1000').setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(MANUAL,true).setAllowInvalid(false).build());
+ sh.getRange('L2:L1000').setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(MANUAL,true).setAllowInvalid(true).build());
  ss.setActiveSheet(sh);ss.moveActiveSheet(TABS.indexOf(name)+1);}
  ss.setActiveSheet(ss.getSheetByName('Setup'));ss.moveActiveSheet(TABS.length+1);syncAuctions();
 }
@@ -61,12 +61,16 @@ function syncAuctions(){const lock=LockService.getScriptLock();if(!lock.tryLock(
  for(const x of start){const row=x.v;let r;if(row[14]){if(seen.has(row[14]))throw Error('Duplicate sheet record ID '+row[14]);seen.add(row[14]);r=byId.get(row[14]);if(!r)throw Error('An Airtable record was removed; retain its sheet row for manual review.');if(String(row[2])!==String(r.fields['Auction Link']||''))throw Error('Existing auction links cannot change identity; add a new row instead.');}
  else {if(!row[2])continue;const key=auctionId(row[2]);r=byAuction.get(key);if(!r){const f={'Name':key,'Auction Link':String(row[2])};for(const[c,k]of Object.entries(EDITS))f[k]=normalized(Number(c),row[Number(c)]);r=api('post','',{records:[{fields:f}]}).records[0];records.push(r);byId.set(r.id,r);byAuction.set(key,r);props.setProperty('BASE_'+r.id,JSON.stringify(editable(r.fields)));}else throw Error('Auction already exists: '+key+'. Edit its existing row rather than add a duplicate.');continue;}
  const raw=props.getProperty('BASE_'+r.id);if(!raw)throw Error('Missing baseline for '+r.id+'; run install only after preserving pending edits.');
- const fresh=api('get','/'+r.id),patch=merge(JSON.parse(raw),editable(fresh.fields),row);
+ const base=JSON.parse(raw);const hasLocalEdit=Object.entries(EDITS).some(([c,k])=>JSON.stringify(normalized(Number(c),row[Number(c)]))!==JSON.stringify(base[k]));
+ if(!hasLocalEdit)continue;
+ const fresh=api('get','/'+r.id),patch=merge(base,editable(fresh.fields),row);
  if(Object.keys(patch).length){const updated=api('patch','/'+r.id,{fields:patch});props.setProperty('BASE_'+r.id,JSON.stringify(editable(updated.fields)));}
  }
  // Preserve user edits made during API calls; the next trigger will process them.
  if(signature(rowsNow())!==sig){status('Changes arrived during sync; rows retained. Next run will finish refresh.');return;}
- const fresh=readAll();render(fresh);saveBaselines(fresh);status('Last successful sync: '+new Date().toISOString()+'. Yahoo importer refreshes independently.');
+ const fresh=readAll();
+ if(signature(rowsNow())!==sig){status('New edits detected before refresh; rows retained for the next run.');return;}
+ render(fresh);saveBaselines(fresh);status('Last successful sync: '+new Date().toISOString()+'. Yahoo importer refreshes independently.');
  }catch(e){status('SYNC NEEDS REVIEW: '+e.message);throw e;}finally{lock.releaseLock();}}
 function render(records){const grouped=Object.fromEntries(TABS.map(t=>[t,[]]));for(const r of records){const f=r.fields;if(!f["Auction Link"])continue;grouped[tabFor(f)].push([f['Auction ID']||'',f['Auction Title EN']||f['Auction Title']||f['Name']||'',f['Auction Link']||'',f['My Max Bid JPY']??'',f['Current Bid JPY']??'',f['Final Price JPY']??'',f['End Time']?Utilities.formatDate(new Date(f['End Time']),'Asia/Tokyo','yyyy-MM-dd HH:mm'):'',f['Auction Status']||'',f['Bid Result']||'',!!f['Confirmed Won'],f['Bid Instructions']||'',f['Matt Status']||'',f['Matt Notes']||'',f['Last Checked']||'',r.id]);}
  for(const tab of TABS){const sh=sheet().getSheetByName(tab),rows=grouped[tab];rows.sort((a,b)=>String(a[6]||'9999').localeCompare(String(b[6]||'9999')));const old=sh.getLastRow();if(sh.getMaxRows()<rows.length+1)sh.insertRowsAfter(sh.getMaxRows(),rows.length+1-sh.getMaxRows());if(rows.length)sh.getRange(2,1,rows.length,15).setValues(rows.map(row=>row.map(v=>typeof v==="string"&&v.startsWith("=")?"\u0027"+v:v)));if(old>rows.length+1)sh.getRange(rows.length+2,1,old-rows.length-1,15).clearContent();}
