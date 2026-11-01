@@ -55,7 +55,30 @@ function autoStatus(f){
  return f['Auction Status']==='Active'?'Active':'Checking';
 }
 function nextStatus(f){const s=cleanStatus(f['Matt Status']);if(s)return s;if(f['Confirmed Won'])return 'Won';return f['Auction Status']==='Ended'||f['Auction Status']==='Cancelled'?'Auto':'Queue';}
-function tabFor(f){const s=nextStatus(f);if(s==='Bid Placed')return 'Active';if(s==='Lost')return 'Ended - Lost';if(s!=='Auto')return s;const a=autoStatus(f);return a==='Ended/Lost'?'Ended - Lost':a==='Presumed Won'?'Presumed Won':a==='Active'?'Active':'Queue';}
+function isAuctionEnded(f){
+ if(f['Auction Status']==='Ended'||f['Auction Status']==='Cancelled'||f['Auction Status']==='Won'||f['Auction Status']==='Lost')return true;
+ const end=f['End Time']?new Date(f['End Time']).getTime():NaN;
+ return Number.isFinite(end)&&end<=Date.now();
+}
+function tabFor(f){
+ const s=nextStatus(f),ended=isAuctionEnded(f);
+ // The actual end time always wins over the manual bidding-workflow status.
+ // Only a positive, explicit winning confirmation belongs in Won.
+ if(s==='Won'||f['Confirmed Won']===true)return 'Won';
+ if(s==='Lost')return 'Ended - Lost';
+ if(ended){
+  if(s==='Presumed Won')return 'Presumed Won';
+  // A completed auction without confirmed outcome is not an active auction.
+  // Mark plausible successes as presumed only when Matt really marked "Bid Placed".
+  const final=Number(f['Final Price JPY']??f['Current Bid JPY']);
+  const max=Number(f['My Max Bid JPY']);
+  if(s==='Bid Placed'&&Number.isFinite(final)&&final>0&&Number.isFinite(max)&&max>=final)return 'Presumed Won';
+  return 'Ended - Lost';
+ }
+ if(s==='Bid Placed')return 'Active';
+ // A queued or unsubmitted auction remains in Queue, not Active.
+ return 'Queue';
+}
 function applyWorkflow(records){
  const updates=[];
  for(const r of records){if(!r.fields['Auction Link'])continue;const s=nextStatus(r.fields),won=s==='Won';
