@@ -86,7 +86,9 @@ async function main() {
       continue;
     }
 
-    if (!forceRescan && ENDED_STATUSES.has(existingStatus) && !needsEnrichment(f)) {
+    if (!forceRescan && ENDED_STATUSES.has(existingStatus) && !needsEnrichment(f) &&
+        !(existingStatus === 'Ended' && (!Number.isFinite(Number(f[CONFIG.fields.finalPrice])) ||
+          Number(f[CONFIG.fields.finalPrice]) <= 0 || new Date(f[CONFIG.fields.endTime]).getTime() > Date.now()))) {
       skipped++;
       continue;
     }
@@ -228,13 +230,16 @@ async function scrapeYahooAuction(url) {
 
   // Use this auction's explicit state before searching free text. Seller terms
   // often contain conditional phrases such as 落札されましたら ("if you win").
-  const auctionState = parseAuctionState($, auctionId);
+  const auctionItems = parseAuctionItems($, auctionId);
+  const auctionState = String(auctionItems?.isClosed) === '0' ? 'Active' : String(auctionItems?.isClosed) === '1' ? 'Ended' : undefined;
   const publicEnded = auctionState === 'Ended' ||
     (auctionState === undefined && /このオークションは終了|オークションは終了|終了しました|終了しています|落札されました(?!ら)/.test(text));
-  const currentBid = parseCurrentPrice($, text);
+  const currentBid = parseYen(auctionItems?.price) ?? parseCurrentPrice($, text);
   const buyoutPrice = parseBuyoutPrice($, text);
-  const bidCount = parseBidCount(text);
-  const endTimeIso = parseEndTimeIso($, text);
+  const bidCount = parseInteger(auctionItems?.bids) ?? parseBidCount(text);
+  const endTimeIso = auctionItems?.endtime
+    ? parseAnyDateToIso(auctionItems.endtime.replace(' ', 'T') + '+09:00') || parseEndTimeIso($, text)
+    : parseEndTimeIso($, text);
   const photos = await parsePhotoUrls($, html, normalizedUrl);
   const description = parseDescription($, text);
   const condition = parseCondition($, text);
@@ -277,8 +282,8 @@ async function scrapeYahooAuction(url) {
   };
 }
 
-function parseAuctionState($, auctionId) {
-  let state;
+function parseAuctionItems($, auctionId) {
+  let result;
   $('script').each((_, el) => {
     const raw = $(el).contents().text();
     const match = raw.match(/var\s+pageData\s*=\s*(\{[\s\S]*?\})\s*;/);
@@ -287,13 +292,12 @@ function parseAuctionState($, auctionId) {
       const items = JSON.parse(match[1]).items;
       // Only trust the state for the requested auction, never related listings.
       if (items?.productID !== auctionId) return;
-      if (String(items.isClosed) === '0') state = 'Active';
-      else if (String(items.isClosed) === '1') state = 'Ended';
+      result = items;
     } catch {
       // Fall back to explicit page notices if state JSON changes format.
     }
   });
-  return state;
+  return result;
 }
 
 function parseTitle($, text) {
