@@ -168,7 +168,7 @@ async function buildAirtableFields(parsed, existingFields, options = {}) {
 
   if (parsed.status === 'Ended' && Number.isFinite(parsed.currentBid)) {
     setField(out, CONFIG.fields.finalPrice, parsed.currentBid);
-  } else if (forceRescan && parsed.status !== 'Ended') {
+  } else if (parsed.status === 'Active') {
     // If a previous scrape incorrectly marked an active auction as ended, clear the stale final price.
     setField(out, CONFIG.fields.finalPrice, null);
   }
@@ -226,7 +226,11 @@ async function scrapeYahooAuction(url) {
   const title = parseTitle($, text);
   const auctionId = extractAuctionId(normalizedUrl);
 
-  const publicEnded = /このオークションは終了|オークションは終了|終了しました|終了しています|落札されました/.test(text);
+  // Use this auction's explicit state before searching free text. Seller terms
+  // often contain conditional phrases such as 落札されましたら ("if you win").
+  const auctionState = parseAuctionState($, auctionId);
+  const publicEnded = auctionState === 'Ended' ||
+    (auctionState === undefined && /このオークションは終了|オークションは終了|終了しました|終了しています|落札されました(?!ら)/.test(text));
   const currentBid = parseCurrentPrice($, text);
   const buyoutPrice = parseBuyoutPrice($, text);
   const bidCount = parseBidCount(text);
@@ -271,6 +275,25 @@ async function scrapeYahooAuction(url) {
     conditionRank,
     statusNote
   };
+}
+
+function parseAuctionState($, auctionId) {
+  let state;
+  $('script').each((_, el) => {
+    const raw = $(el).contents().text();
+    const match = raw.match(/var\s+pageData\s*=\s*(\{[\s\S]*?\})\s*;/);
+    if (!match) return;
+    try {
+      const items = JSON.parse(match[1]).items;
+      // Only trust the state for the requested auction, never related listings.
+      if (items?.productID !== auctionId) return;
+      if (String(items.isClosed) === '0') state = 'Active';
+      else if (String(items.isClosed) === '1') state = 'Ended';
+    } catch {
+      // Fall back to explicit page notices if state JSON changes format.
+    }
+  });
+  return state;
 }
 
 function parseTitle($, text) {
