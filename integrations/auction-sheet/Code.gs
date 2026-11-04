@@ -86,7 +86,7 @@ function applyWorkflow(records){
  return records;
 }
 function auctionId(url){const m=String(url||'').match(/^https:\/\/(?:auctions\.yahoo\.co\.jp|auctions\.yahoo\.co\.jp)\/jp\/auction\/([A-Za-z0-9]+)(?:[?#/].*)?$/);if(!m)throw Error('Use a Yahoo auction URL of the form https://auctions.yahoo.co.jp/jp/auction/ID');return m[1];}
-function normalized(col,value){if(col===9)return value===true||String(value).toUpperCase()==='TRUE';if(col===3){if(value===''||value===null)return null;const n=Number(value);if(!Number.isFinite(n)||n<0||!Number.isInteger(n))throw Error('Maximum bid must be a nonnegative whole yen amount.');return n;}const s=String(value??'');if(s.length>1500)throw Error('Keep instructions/status/notes under 1,500 characters.');return s;}
+function normalized(col,value){if(col===9)return value===true||String(value).toUpperCase()==='TRUE';if(col===3){if(value===''||value===null)return null;const raw=String(value).trim();const n=Number(/^\d{1,3}(,\d{3})+$/.test(raw)?raw.replace(/,/g,''):value);if(!Number.isFinite(n)||n<0||!Number.isInteger(n))throw Error('Maximum bid must be a nonnegative whole yen amount.');return n;}const s=String(value??'');if(s.length>1500)throw Error('Keep instructions/status/notes under 1,500 characters.');return s;}
 function editable(f){const out={};for(const [c,k]of Object.entries(EDITS))out[k]=normalized(Number(c),f[k]??'');return out;}
 function merge(base,remote,row){const patch={};
  for(const[c,k]of Object.entries(EDITS)){const local=normalized(Number(c),row[Number(c)]);if(JSON.stringify(local)===JSON.stringify(base[k]))continue;
@@ -101,7 +101,7 @@ function merge(base,remote,row){const patch={};
 function baselineFor(props,r,row){
  const raw=props.getProperty('BASE_'+r.id);if(raw)return JSON.parse(raw);
  const remote=editable(r.fields);
- const differs=Object.entries(EDITS).some(([c,k])=>JSON.stringify(normalized(Number(c),row[Number(c)]))!==JSON.stringify(remote[k]));
+ const differs=Object.entries(EDITS).some(([c,k])=>{const local=normalized(Number(c),row[Number(c)]);return JSON.stringify(local)!==JSON.stringify(remote[k])&&!(k==='Matt Notes'&&remote[k]===''&&local!=='');});
  if(differs)throw Error('Missing baseline with pending differences for '+r.id+'; reconcile this row with Airtable before retrying. Sheet edits have been retained.');
  props.setProperty('BASE_'+r.id,JSON.stringify(remote));return remote;
 }
