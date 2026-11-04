@@ -27,7 +27,8 @@ function auctionEdited(e){
  const old=baseRaw?JSON.parse(baseRaw)['Matt Status']:r.fields['Matt Status']||'';
  if(String(r.fields['Matt Status']||'')!==String(old)&&String(r.fields['Matt Status']||'')!==String(e.value))throw Error('Status changed in Airtable at the same time; review before retrying.');
  const updated=api('patch','/'+id,{fields:{'Matt Status':e.value,'Confirmed Won':e.value==='Won'}});
- PropertiesService.getScriptProperties().setProperty('BASE_'+id,JSON.stringify(editable(updated.fields)));
+ const base=baseRaw?JSON.parse(baseRaw):editable(r.fields);base['Matt Status']=updated.fields['Matt Status']||'';
+ PropertiesService.getScriptProperties().setProperty('BASE_'+id,JSON.stringify(base));
  }}finally{lock.releaseLock();}}
  syncAuctions();
 }
@@ -134,6 +135,8 @@ function syncAuctions(){const lock=LockService.getScriptLock();if(!lock.tryLock(
  render(fresh);saveBaselines(fresh);status('Last successful sync: '+new Date().toISOString()+'. Yahoo importer refreshes independently.');
  }catch(e){status('SYNC NEEDS REVIEW: '+e.message);throw e;}finally{lock.releaseLock();}}
 function render(records){const grouped=Object.fromEntries(TABS.map(t=>[t,[]]));for(const r of records){const f=r.fields;if(!f["Auction Link"])continue;grouped[tabFor(f)].push([f['Auction ID']||'',f['Auction Title EN']||f['Auction Title']||f['Name']||'',f['Auction Link']||'',f['My Max Bid JPY']??'',f['Current Bid JPY']??'',f['Final Price JPY']??'',f['End Time']?Utilities.formatDate(new Date(f['End Time']),'Asia/Tokyo','yyyy-MM-dd HH:mm'):'',autoStatus(f),f['Bid Result']||'',!!f['Confirmed Won'],f['Bid Instructions']||'',f['Matt Status']||'',f['Matt Notes']||'',f['Last Checked']||'',r.id]);}
- for(const tab of TABS){const sh=sheet().getSheetByName(tab),rows=grouped[tab];rows.sort((a,b)=>String(a[6]||'9999').localeCompare(String(b[6]||'9999')));const old=sh.getLastRow();if(sh.getMaxRows()<rows.length+1)sh.insertRowsAfter(sh.getMaxRows(),rows.length+1-sh.getMaxRows());if(rows.length)sh.getRange(2,1,rows.length,15).setValues(rows.map(row=>row.map(v=>typeof v==="string"&&v.startsWith("=")?"\u0027"+v:v)));if(old>rows.length+1)sh.getRange(rows.length+2,1,old-rows.length-1,15).clearContent();}
+ for(const tab of TABS){const sh=sheet().getSheetByName(tab),rows=grouped[tab];rows.sort((a,b)=>String(a[6]||'9999').localeCompare(String(b[6]||'9999')));const old=sh.getLastRow();if(sh.getMaxRows()<rows.length+1)sh.insertRowsAfter(sh.getMaxRows(),rows.length+1-sh.getMaxRows());if(rows.length)sh.getRange(2,1,rows.length,16).setValues(rows.map(row=>[...row,timeRemaining(row[6])].map(v=>typeof v==="string"&&v.startsWith("=")?"\u0027"+v:v)));if(old>rows.length+1)sh.getRange(rows.length+2,1,old-rows.length-1,16).clearContent();}
 }
 function saveBaselines(records){const p=PropertiesService.getScriptProperties();for(const r of records)p.setProperty('BASE_'+r.id,JSON.stringify(editable(r.fields)));}
+
+function timeRemaining(jst){if(!jst)return '';const ms=new Date(jst.replace(' ','T')+':00+09:00').getTime()-Date.now();if(!Number.isFinite(ms))return '';if(ms<=0)return 'Ended';const m=Math.floor(ms/60000);return Math.floor(m/1440)+'d '+Math.floor(m%1440/60)+'h '+(m%60)+'m';}
