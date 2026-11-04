@@ -1,20 +1,31 @@
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
 const ctx=vm.createContext({console});vm.runInContext(fs.readFileSync('integrations/auction-sheet/Code.gs','utf8'),ctx);
 let tests=0;const run=(s,expected)=>{assert.equal(vm.runInContext(s,ctx),expected);tests++;};
+for(const [status,tab] of [['Auto','Queue'],['Queue','Queue'],['Bid Placed','Active'],['Presumed Won','Presumed Won'],['Won','Won'],['Lost','Ended - Lost']]){
+ ctx.status=status;run("tabFor({'Matt Status':status,'Auction Status':'Active','End Time':'2099-01-01T00:00:00Z'})",tab);
+}
 run("tabFor({'Confirmed Won':true,'Auction Status':'Ended'})",'Won');
-run("tabFor({'Bid Result':'Likely Won','Auction Status':'Ended'})",'Lost - Ended');
-run("tabFor({'Bid Result':'Won','Auction Status':'Ended'})",'Won');
-run("tabFor({'Auction Status':'Active','Bid Result':'Outbid'})",'Active');
-run("tabFor({'Auction Status':'Cancelled'})",'Lost - Ended');
+run("tabFor({'Matt Status':'Queue','End Time':'2020-01-01T00:00:00Z'})",'Ended - Lost');
+run("tabFor({'Matt Status':'Bid Placed','Auction Status':'Ended','Current Bid JPY':100,'My Max Bid JPY':200})",'Ended - Lost');
+run("tabFor({'Matt Status':'Bid Placed','Auction Status':'Ended','Final Price JPY':100,'My Max Bid JPY':200})",'Presumed Won');
+run("tabFor({'Matt Status':'Bid Placed','Auction Status':'Ended','Final Price JPY':300,'My Max Bid JPY':200})",'Ended - Lost');
+run("tabFor({'Auction Status':'Cancelled'})",'Ended - Lost');
 run("normalized(3,0)",0);run("normalized(3,'')",null);
 assert.throws(()=>vm.runInContext("normalized(3,-1)",ctx));tests++;
 assert.throws(()=>vm.runInContext("normalized(3,1.5)",ctx));tests++;
 run("auctionId('https://auctions.yahoo.co.jp/jp/auction/a123456?foo=bar')",'a123456');
 assert.throws(()=>vm.runInContext("auctionId('https://example.com/jp/auction/abc')",ctx));tests++;
-ctx.base={'My Max Bid JPY':100,'Confirmed Won':false,'Bid Instructions':'','Matt Status':'','Matt Notes':''};
-ctx.remote={...ctx.base};ctx.row=['','','',200,'','','','','',false,'','',''];
+ctx.base={'My Max Bid JPY':100,'Matt Status':'Queue','Matt Notes':''};
+ctx.remote={...ctx.base};ctx.row=['','','',200,'','','','','',false,'','Queue',''];
 run("merge(base,remote,row)['My Max Bid JPY']",200);
 ctx.remote['My Max Bid JPY']=300;assert.throws(()=>vm.runInContext('merge(base,remote,row)',ctx));tests++;
 ctx.row[3]=100;run('Object.keys(merge(base,remote,row)).length',0);
 ctx.row[3]=300;run('Object.keys(merge(base,remote,row)).length',1);
-console.log(tests+' routing, identity, validation, and conflict checks passed');
+ctx.saved={};ctx.props={getProperty:k=>ctx.saved[k],setProperty:(k,v)=>{ctx.saved[k]=v;}};
+ctx.record={id:'recTest',fields:{...ctx.base}};ctx.row[3]=100;
+run("baselineFor(props,record,row)['Matt Status']",'Queue');
+assert.ok(ctx.saved.BASE_recTest);tests++;
+ctx.saved={};ctx.row[3]=200;
+assert.throws(()=>vm.runInContext('baselineFor(props,record,row)',ctx),/pending differences/);tests++;
+assert.equal(ctx.saved.BASE_recTest,undefined);tests++;
+console.log(tests+' routing, baseline recovery, identity, validation, and conflict checks passed');
