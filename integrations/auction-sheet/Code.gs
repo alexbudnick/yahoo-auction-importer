@@ -10,9 +10,8 @@ function install(){
  const p=PropertiesService.getScriptProperties();
  if(!p.getProperty('AIRTABLE_TOKEN'))throw Error('Add AIRTABLE_TOKEN in Project Settings → Script Properties. Scope it to Auction Workflow only.');
  p.setProperty('SPREADSHEET_ID',SpreadsheetApp.getActive().getId());
- // First activation refreshes the initial snapshot; use after saving any pending changes elsewhere.
- const lock=LockService.getScriptLock();lock.waitLock(30000);
- try{const records=readAll();render(records);saveBaselines(records);}finally{lock.releaseLock();}
+ // Reconcile pending edits before creating triggers; never reset the snapshot on reinstall.
+ syncAuctions();
  for(const t of ScriptApp.getProjectTriggers())if(['syncAuctions','auctionEdited'].includes(t.getHandlerFunction()))ScriptApp.deleteTrigger(t);
  ScriptApp.newTrigger('syncAuctions').timeBased().everyMinutes(1).create();
  ScriptApp.newTrigger('auctionEdited').forSpreadsheet(p.getProperty('SPREADSHEET_ID')).onEdit().create();
@@ -66,11 +65,11 @@ function tabFor(f){
  // Only a positive, explicit winning confirmation belongs in Won.
  if(s==='Won'||f['Confirmed Won']===true)return 'Won';
  if(s==='Lost')return 'Ended - Lost';
+ if(s==='Presumed Won')return 'Presumed Won';
  if(ended){
-  if(s==='Presumed Won')return 'Presumed Won';
   // A completed auction without confirmed outcome is not an active auction.
   // Mark plausible successes as presumed only when Matt really marked "Bid Placed".
-  const final=Number(f['Final Price JPY']??f['Current Bid JPY']);
+  const final=Number(f['Final Price JPY']);
   const max=Number(f['My Max Bid JPY']);
   if(s==='Bid Placed'&&Number.isFinite(final)&&final>0&&Number.isFinite(max)&&max>=final)return 'Presumed Won';
   return 'Ended - Lost';
@@ -97,6 +96,15 @@ function merge(base,remote,row){const patch={};
  if(Object.prototype.hasOwnProperty.call(patch,'Matt Status'))patch['Confirmed Won']=patch['Matt Status']==='Won';
  return patch;
 }
+// Missing snapshots may be seeded only when editable values agree on both sides.
+// A divergent row remains untouched so an old sheet cannot silently replace Airtable.
+function baselineFor(props,r,row){
+ const raw=props.getProperty('BASE_'+r.id);if(raw)return JSON.parse(raw);
+ const remote=editable(r.fields);
+ const differs=Object.entries(EDITS).some(([c,k])=>JSON.stringify(normalized(Number(c),row[Number(c)]))!==JSON.stringify(remote[k]));
+ if(differs)throw Error('Missing baseline with pending differences for '+r.id+'; reconcile this row with Airtable before retrying. Sheet edits have been retained.');
+ props.setProperty('BASE_'+r.id,JSON.stringify(remote));return remote;
+}
 function rowsNow(){const out=[];for(const tab of TABS){const sh=sheet().getSheetByName(tab);if(!sh)throw Error('Missing tab '+tab);const v=sh.getRange(1,1,Math.max(sh.getLastRow(),1),15).getValues();if(JSON.stringify(v[0])!==JSON.stringify(HEADERS))throw Error('Headers changed on '+tab);for(let i=1;i<v.length;i++)if(v[i].some(x=>x!==''&&x!==false))out.push({tab,row:i+1,v:v[i]});}return out;}
 function signature(rows){return JSON.stringify(rows);}
 function upgradeBidStatuses(){upgradeTabs();}
@@ -114,8 +122,7 @@ function syncAuctions(){const lock=LockService.getScriptLock();if(!lock.tryLock(
  for(const r of records){if(!r.fields['Auction Link'])continue;const key=auctionId(r.fields['Auction Link']);if(byAuction.has(key))throw Error('Duplicate Airtable auction ID '+key);byAuction.set(key,r);}
  for(const x of start){const row=x.v;let r;if(row[14]){if(seen.has(row[14]))throw Error('Duplicate sheet record ID '+row[14]);seen.add(row[14]);r=byId.get(row[14]);if(!r)throw Error('An Airtable record was removed; retain its sheet row for manual review.');if(String(row[2])!==String(r.fields['Auction Link']||''))throw Error('Existing auction links cannot change identity; add a new row instead.');}
  else {if(!row[2])continue;const key=auctionId(row[2]);r=byAuction.get(key);if(!r){const f={'Name':key,'Auction Link':String(row[2])};for(const[c,k]of Object.entries(EDITS))f[k]=normalized(Number(c),row[Number(c)]);r=api('post','',{records:[{fields:f}]}).records[0];records.push(r);byId.set(r.id,r);byAuction.set(key,r);props.setProperty('BASE_'+r.id,JSON.stringify(editable(r.fields)));}else throw Error('Auction already exists: '+key+'. Edit its existing row rather than add a duplicate.');continue;}
- const raw=props.getProperty('BASE_'+r.id);if(!raw)throw Error('Missing baseline for '+r.id+'; run install only after preserving pending edits.');
- const base=JSON.parse(raw);const hasLocalEdit=Object.entries(EDITS).some(([c,k])=>JSON.stringify(normalized(Number(c),row[Number(c)]))!==JSON.stringify(base[k]));
+ const base=baselineFor(props,r,row);const hasLocalEdit=Object.entries(EDITS).some(([c,k])=>JSON.stringify(normalized(Number(c),row[Number(c)]))!==JSON.stringify(base[k]));
  if(!hasLocalEdit)continue;
  const fresh=api('get','/'+r.id),patch=merge(base,editable(fresh.fields),row);
  if(Object.keys(patch).length){const updated=api('patch','/'+r.id,{fields:patch});props.setProperty('BASE_'+r.id,JSON.stringify(editable(updated.fields)));}
